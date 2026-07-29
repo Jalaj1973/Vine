@@ -73,6 +73,9 @@ export default function App() {
   
   const processedHashesRef = useRef<Set<string>>(new Set());
   const isThinkingRef = useRef<boolean>(false);
+  const selectedModelRef = useRef<string>('qwen2.5-coder:1.5b');
+  const autoCoPilotRef = useRef<boolean>(true);
+  const recordingSecondsRef = useRef<number>(0);
 
   // Microphone Devices State
   const [micDevices, setMicDevices] = useState<MicDevice[]>([]);
@@ -91,6 +94,18 @@ export default function App() {
   useEffect(() => {
     isThinkingRef.current = isAiThinking;
   }, [isAiThinking]);
+
+  useEffect(() => {
+    selectedModelRef.current = selectedModel;
+  }, [selectedModel]);
+
+  useEffect(() => {
+    autoCoPilotRef.current = autoCoPilotEnabled;
+  }, [autoCoPilotEnabled]);
+
+  useEffect(() => {
+    recordingSecondsRef.current = recordingSeconds;
+  }, [recordingSeconds]);
 
   const [chatInput, setChatInput] = useState('');
   const [messages, setMessages] = useState<Array<{ sender: 'user' | 'ai'; text: string }>>([
@@ -162,9 +177,10 @@ export default function App() {
     return () => clearInterval(interval);
   }, [isRecording]);
 
-  // Non-blocking Chrome Tab Monitor Loop (Every 4 seconds) - Exact Checkpoint 4 Logic
+  // Non-blocking Chrome Tab Monitor Loop (Every 4 seconds)
+  // All frequently-changing values are read from refs to avoid tearing down/recreating the interval
   useEffect(() => {
-    let screenInterval: any = null;
+    let screenInterval: ReturnType<typeof setInterval> | null = null;
 
     if (autoScreenMonitorEnabled) {
       screenInterval = setInterval(async () => {
@@ -181,7 +197,7 @@ export default function App() {
             !browserTabText.includes('Atlas Co-Pilot') &&
             !browserTabText.includes('Atlas AI Desktop')
           ) {
-            const currentHash = computeHash(browserTabText.trim());
+            const currentHash = await computeHash(browserTabText.trim());
             
             if (processedHashesRef.current.has(currentHash)) {
               return;
@@ -189,18 +205,24 @@ export default function App() {
 
             const looksLikeQuestion = /[?]|problem|given|constraints|complexity|example|input|output|solution|function|class|return|leetcode/i.test(browserTabText);
 
-            if (looksLikeQuestion && autoCoPilotEnabled) {
+            if (looksLikeQuestion && autoCoPilotRef.current) {
               processedHashesRef.current.add(currentHash);
               setIsAiThinking(true);
               isThinkingRef.current = true;
 
+              const currentModel = selectedModelRef.current;
+              const currentRecSec = recordingSecondsRef.current;
               const startTime = performance.now();
-              addDebugLog(`⚡ New Chrome Question Detected! Generating solution via ${selectedModel}...`);
+              addDebugLog(`⚡ New Chrome Question Detected! Generating solution via ${currentModel}...`);
               
               const prompt = `Active Chrome/Browser Tab Problem Statement:\n${browserTabText}\n\nProvide an instant, concise solution with explanation & optimal code solution:`;
               
-              const aiMsgIndex = messages.length;
-              setMessages(prev => [...prev, { sender: 'ai', text: '⚡ [Real-time Solution Stream]\n' }]);
+              // Use functional updater to get correct index without stale closure
+              let aiMsgIndex = -1;
+              setMessages(prev => {
+                aiMsgIndex = prev.length;
+                return [...prev, { sender: 'ai' as const, text: '⚡ [Real-time Solution Stream]\n' }];
+              });
 
               const streamItemId = `browser_sol_${Date.now()}`;
               setActiveSession(prev => {
@@ -211,9 +233,9 @@ export default function App() {
                     ...prev.transcripts,
                     {
                       id: streamItemId,
-                      timestamp_sec: recordingSeconds,
-                      formatted_time: formatTimer(recordingSeconds),
-                      speaker: `⚡ Real-time AI Solution (${selectedModel})`,
+                      timestamp_sec: currentRecSec,
+                      formatted_time: formatTimer(currentRecSec),
+                      speaker: `⚡ Real-time AI Solution (${currentModel})`,
                       text: '',
                     }
                   ]
@@ -228,7 +250,7 @@ export default function App() {
                 await streamOllamaAssistantTokens(
                   prompt,
                   'You are an expert technical interviewer and coding assessment assistant.',
-                  selectedModel,
+                  currentModel,
                   (token) => {
                     if (!hasRecordedTtft) {
                       hasRecordedTtft = true;
@@ -242,7 +264,7 @@ export default function App() {
 
                     setMessages(prev => {
                       const updated = [...prev];
-                      if (updated[aiMsgIndex]) {
+                      if (aiMsgIndex >= 0 && updated[aiMsgIndex]) {
                         updated[aiMsgIndex] = { sender: 'ai', text: accumulatedTokens };
                       }
                       return updated;
@@ -272,8 +294,8 @@ export default function App() {
       }, 4000);
     }
 
-    return () => clearInterval(screenInterval);
-  }, [autoScreenMonitorEnabled, autoCoPilotEnabled, recordingSeconds, selectedModel, messages.length]);
+    return () => { if (screenInterval) clearInterval(screenInterval); };
+  }, [autoScreenMonitorEnabled]);
 
   // Auto-scroll transcript container
   useEffect(() => {
