@@ -1,0 +1,26 @@
+[package]
+name = "atlas-ai-desktop"
+version = "0.1.0"
+description = "Local-first macOS meeting transcription & AI assistant app"
+authors = ["Atlas AI Team"]
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2.0.0", features = [] }
+
+[dependencies]
+tauri = { version = "2.0.0", features = [] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1", features = ["full"] }
+dirs = "6.0"
+reqwest = { version = "0.12", features = ["json"] }
+whisper-rs = "0.13"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+cocoa = "0.24"
+objc = "0.2"
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
