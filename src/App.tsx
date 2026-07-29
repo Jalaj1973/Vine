@@ -82,6 +82,8 @@ export default function App() {
   const [selectedMicId, setSelectedMicId] = useState<string>('default');
 
   const transcriptEndRef = useRef<HTMLDivElement>(null);
+  const notesSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const MAX_MESSAGES = 50;
 
   const [ollamaStatus, setOllamaStatus] = useState<OllamaStatus>({
     online: false,
@@ -382,7 +384,7 @@ export default function App() {
             selectedModel
           );
 
-          setMessages(prev => [...prev, { sender: 'ai', text: `📷 [Region Capture Answer]\n${solution}` }]);
+          setMessages(prev => [...prev.slice(-MAX_MESSAGES + 1), { sender: 'ai', text: `📷 [Region Capture Answer]\n${solution}` }]);
           setIsAiThinking(false);
         }
 
@@ -452,7 +454,7 @@ export default function App() {
               selectedModel
             );
 
-            setMessages(prev => [...prev, { sender: 'ai', text: `⚡ [Instant Spoken Answer]\n${spokenAnswer}` }]);
+            setMessages(prev => [...prev.slice(-MAX_MESSAGES + 1), { sender: 'ai', text: `⚡ [Instant Spoken Answer]\n${spokenAnswer}` }]);
 
             setActiveSession(prev => {
               if (!prev) return prev;
@@ -502,9 +504,13 @@ export default function App() {
   const handleNotesChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const val = e.target.value;
     setNotesText(val);
-    if (activeSession) {
-      saveSessionNotes(activeSession.metadata.id, val);
-    }
+    // Debounce disk writes: save 500ms after user stops typing
+    if (notesSaveTimerRef.current) clearTimeout(notesSaveTimerRef.current);
+    notesSaveTimerRef.current = setTimeout(() => {
+      if (activeSession) {
+        saveSessionNotes(activeSession.metadata.id, val);
+      }
+    }, 500);
   };
 
   const handleSendMessage = async (e: React.FormEvent) => {
@@ -512,7 +518,7 @@ export default function App() {
     if (!chatInput.trim() || isAiThinking) return;
 
     const userText = chatInput;
-    setMessages(prev => [...prev, { sender: 'user', text: userText }]);
+    setMessages(prev => [...prev.slice(-MAX_MESSAGES + 1), { sender: 'user', text: userText }]);
     setChatInput('');
     setIsAiThinking(true);
 
@@ -527,9 +533,9 @@ ${transcriptText}`;
 
     try {
       const response = await askOllamaAssistant(userText, systemContext, selectedModel);
-      setMessages(prev => [...prev, { sender: 'ai', text: response }]);
+      setMessages(prev => [...prev.slice(-MAX_MESSAGES + 1), { sender: 'ai', text: response }]);
     } catch (err) {
-      setMessages(prev => [...prev, { sender: 'ai', text: 'Error connecting to local Ollama assistant.' }]);
+      setMessages(prev => [...prev.slice(-MAX_MESSAGES + 1), { sender: 'ai', text: 'Error connecting to local Ollama assistant.' }]);
     } finally {
       setIsAiThinking(false);
     }

@@ -165,7 +165,8 @@ pub fn capture_active_browser_tab() -> Result<String, String> {
         }
     }
 
-    capture_full_screen_ocr()
+    // No browser content could be captured — return empty instead of falling back to full desktop screenshot
+    Ok(String::new())
 }
 
 fn run_apple_vision_ocr(image_path: &std::path::Path, level: &str) -> Result<String, String> {

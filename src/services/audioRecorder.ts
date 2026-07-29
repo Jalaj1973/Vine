@@ -14,7 +14,7 @@ export interface TranscriptionDelta {
 export class AudioStreamRecorder {
   private mediaStream: MediaStream | null = null;
   private audioContext: AudioContext | null = null;
-  private processor: ScriptProcessorNode | null = null;
+  private processor: ScriptProcessorNode | AudioWorkletNode | null = null;
   private speechRecognition: any = null;
   private isRecording: boolean = false;
   private startTime: number = 0;
@@ -76,16 +76,12 @@ export class AudioStreamRecorder {
 
       const nativeSampleRate = this.audioContext.sampleRate;
       const source = this.audioContext.createMediaStreamSource(this.mediaStream);
-      this.processor = this.audioContext.createScriptProcessor(4096, 1, 1);
 
       let rawSamples: number[] = [];
       let lastSendTime = Date.now();
 
-      this.processor.onaudioprocess = async (e) => {
+      const processChunk = async () => {
         if (!this.isRecording) return;
-        const inputData = e.inputBuffer.getChannelData(0);
-        rawSamples.push(...Array.from(inputData));
-
         const now = Date.now();
         if (now - lastSendTime >= 2500) {
           const elapsedSec = Math.floor((now - this.startTime) / 1000);
@@ -97,7 +93,6 @@ export class AudioStreamRecorder {
               const float32Samples = new Float32Array(chunk);
               const resampled16k = await this.resampleTo16kOffline(float32Samples, nativeSampleRate);
               
-              // Invoke native Rust whisper-rs and render returned TranscriptionDelta directly
               const delta = await invoke<TranscriptionDelta>('process_audio_chunk', {
                 sessionId: this.sessionId,
                 samples: Array.from(resampled16k),
@@ -108,15 +103,59 @@ export class AudioStreamRecorder {
               if (delta && delta.text) {
                 onTranscriptDelta(delta);
               }
-            } catch (resampleErr) {
+            } catch (_) {
               // Silence empty speech errors
             }
           }
         }
       };
 
-      source.connect(this.processor);
-      this.processor.connect(this.audioContext.destination);
+      // Prefer AudioWorkletNode (off-main-thread) over deprecated ScriptProcessorNode
+      try {
+        if (this.audioContext.audioWorklet) {
+          const workletCode = `
+            class AudioChunkProcessor extends AudioWorkletProcessor {
+              constructor() { super(); this._buffer = []; }
+              process(inputs) {
+                const input = inputs[0];
+                if (input && input[0]) {
+                  this.port.postMessage(Array.from(input[0]));
+                }
+                return true;
+              }
+            }
+            registerProcessor('audio-chunk-processor', AudioChunkProcessor);
+          `;
+          const blob = new Blob([workletCode], { type: 'application/javascript' });
+          const workletUrl = URL.createObjectURL(blob);
+          await this.audioContext.audioWorklet.addModule(workletUrl);
+          URL.revokeObjectURL(workletUrl);
+
+          const workletNode = new AudioWorkletNode(this.audioContext, 'audio-chunk-processor');
+          workletNode.port.onmessage = (e: MessageEvent) => {
+            if (!this.isRecording) return;
+            rawSamples.push(...e.data);
+            processChunk();
+          };
+          source.connect(workletNode);
+          workletNode.connect(this.audioContext.destination);
+          this.processor = workletNode;
+        } else {
+          throw new Error('AudioWorklet not supported');
+        }
+      } catch (_) {
+        // Fallback to ScriptProcessorNode for older browsers
+        const scriptProcessor = this.audioContext.createScriptProcessor(4096, 1, 1);
+        scriptProcessor.onaudioprocess = (e) => {
+          if (!this.isRecording) return;
+          const inputData = e.inputBuffer.getChannelData(0);
+          rawSamples.push(...Array.from(inputData));
+          processChunk();
+        };
+        source.connect(scriptProcessor);
+        scriptProcessor.connect(this.audioContext.destination);
+        this.processor = scriptProcessor;
+      }
 
       // 4. Web Speech API SpeechRecognition stream fallback
       const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
